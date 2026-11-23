@@ -1,0 +1,1633 @@
+name: Build ProCut Studio APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Generate ProCut Studio Android Project
+        run: |
+          mkdir -p app/src/main/java/com/procut/studio
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ProCutStudio"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.procut.studio"
+              compileSdk = 35
+
+              defaultConfig {
+                  applicationId = "com.procut.studio"
+                  minSdk = 24
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0-Pro"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+                  freeCompilerArgs += listOf(
+                      "-opt-in=androidx.media3.common.util.UnstableApi",
+                      "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+                  )
+              }
+
+              buildFeatures {
+                  compose = true
+              }
+
+              composeOptions {
+                  kotlinCompilerExtensionVersion = "1.5.14"
+              }
+
+              packaging {
+                  resources {
+                      excludes += "/META-INF/{AL2.0,LGPL2.1}"
+                  }
+              }
+          }
+
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
+              implementation(composeBom)
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+              implementation("androidx.activity:activity-compose:1.9.1")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-graphics")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+
+              implementation("androidx.media3:media3-exoplayer:1.5.1")
+              implementation("androidx.media3:media3-ui:1.5.1")
+              implementation("androidx.media3:media3-transformer:1.5.1")
+              implementation("androidx.media3:media3-effect:1.5.1")
+              implementation("androidx.media3:media3-common:1.5.1")
+
+              implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
+              implementation("com.google.guava:guava:33.2.1-android")
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="ProCut Studio"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/procut/studio/Models.kt
+          package com.procut.studio
+
+          import android.graphics.Bitmap
+          import android.net.Uri
+          import java.util.UUID
+
+          enum class AspectRatioOption(val label: String, val ratio: Float) {
+              PORTRAIT_9_16("9:16", 9f / 16f),
+              LANDSCAPE_16_9("16:9", 16f / 9f),
+              SQUARE_1_1("1:1", 1f),
+              SOCIAL_4_5("4:5", 4f / 5f)
+          }
+
+          enum class FilterPreset(val label: String) {
+              NORMAL("Normal"),
+              GRAYSCALE("Hitam Putih"),
+              INVERT("Negatif")
+          }
+
+          enum class KeyframePreset(val label: String) {
+              NONE("Mati"),
+              ZOOM_IN("Zoom In"),
+              ZOOM_OUT("Zoom Out"),
+              PAN_RIGHT("Geser Kanan"),
+              SPIN("Putar Halus")
+          }
+
+          enum class MaskPreset(val label: String) {
+              NONE("Tanpa Mask"),
+              CIRCLE("Lingkaran"),
+              CINEMATIC("Sinematik 2.35:1")
+          }
+
+          enum class TransitionPreset(val label: String) {
+              NONE("Tanpa"),
+              ZOOM_POP("Zoom Pop")
+          }
+
+          data class VideoClip(
+              val id: String = UUID.randomUUID().toString(),
+              val uri: Uri,
+              val label: String,
+              val isImage: Boolean = false,
+              val durationMs: Long = 5000L,
+              val trimStartMs: Long = 0L,
+              val trimEndMs: Long = 5000L,
+              val speed: Float = 1f,
+              val rotation: Float = 0f,
+              val flipH: Boolean = false,
+              val flipV: Boolean = false
+          )
+
+          data class ColorConfig(
+              val brightness: Float = 0f,
+              val contrast: Float = 0f,
+              val saturation: Float = 0f,
+              val filter: FilterPreset = FilterPreset.NORMAL
+          )
+
+          data class TextOverlayConfig(
+              val text: String = "",
+              val colorHex: Int = android.graphics.Color.WHITE,
+              val hasBox: Boolean = true,
+              val posY: Float = -0.65f,
+              val scale: Float = 0.85f
+          )
+
+          data class ImageOverlayConfig(
+              val bitmap: Bitmap? = null,
+              val posX: Float = 0f,
+              val posY: Float = 0.4f,
+              val scale: Float = 0.45f,
+              val alpha: Float = 1f
+          )
+
+          data class AudioConfig(
+              val bgmUri: Uri? = null,
+              val bgmName: String = "",
+              val voiceoverUri: Uri? = null,
+              val ttsUri: Uri? = null,
+              val muteOriginal: Boolean = false,
+              val volume: Float = 1f,
+              val pitch: Float = 1f,
+              val noiseReduction: Float = 0f
+          )
+
+          data class ExportConfig(
+              val height: Int = 1080,
+              val fps: Int = 30
+          )
+
+          data class EditorState(
+              val clips: List<VideoClip> = emptyList(),
+              val selectedClipIndex: Int = 0,
+              val aspectRatio: AspectRatioOption = AspectRatioOption.PORTRAIT_9_16,
+              val color: ColorConfig = ColorConfig(),
+              val keyframe: KeyframePreset = KeyframePreset.NONE,
+              val mask: MaskPreset = MaskPreset.NONE,
+              val transition: TransitionPreset = TransitionPreset.NONE,
+              val textOverlay: TextOverlayConfig = TextOverlayConfig(),
+              val imageOverlay: ImageOverlayConfig = ImageOverlayConfig(),
+              val audio: AudioConfig = AudioConfig(),
+              val beatMarkersMs: List<Long> = emptyList(),
+              val exportConfig: ExportConfig = ExportConfig()
+          )
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/procut/studio/SmartTools.kt
+          package com.procut.studio
+
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.LinearGradient
+          import android.graphics.Paint
+          import android.graphics.Shader
+          import android.media.MediaMetadataRetriever
+          import android.media.MediaRecorder
+          import android.net.Uri
+          import android.os.Build
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import com.google.mlkit.vision.common.InputImage
+          import com.google.mlkit.vision.segmentation.Segmentation
+          import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.util.Locale
+          import java.util.UUID
+
+          object SmartTools {
+
+              fun getVideoDurationMs(context: Context, uri: Uri): Long {
+                  val retriever = MediaMetadataRetriever()
+                  return try {
+                      retriever.setDataSource(context, uri)
+                      retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 5000L
+                  } catch (_: Exception) {
+                      5000L
+                  } finally {
+                      try { retriever.release() } catch (_: Exception) {}
+                  }
+              }
+
+              fun captureFreezeFrame(context: Context, uri: Uri, positionMs: Long): Uri? {
+                  val retriever = MediaMetadataRetriever()
+                  return try {
+                      retriever.setDataSource(context, uri)
+                      val bmp = retriever.getFrameAtTime(positionMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                          ?: return null
+                      val outFile = File(context.cacheDir, "freeze_${System.currentTimeMillis()}.png")
+                      FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                      Uri.fromFile(outFile)
+                  } catch (_: Exception) {
+                      null
+                  } finally {
+                      try { retriever.release() } catch (_: Exception) {}
+                  }
+              }
+
+              fun runAutoCutout(
+                  source: Bitmap,
+                  onSuccess: (Bitmap) -> Unit,
+                  onError: (String) -> Unit
+              ) {
+                  try {
+                      val options = SelfieSegmenterOptions.Builder()
+                          .setDetectorMode(SelfieSegmenterOptions.SINGLE_IMAGE_MODE)
+                          .build()
+                      val segmenter = Segmentation.getClient(options)
+                      val inputImage = InputImage.fromBitmap(source, 0)
+                      segmenter.process(inputImage)
+                          .addOnSuccessListener { mask ->
+                              val buffer = mask.buffer
+                              val width = mask.width
+                              val height = mask.height
+                              val scaled = Bitmap.createScaledBitmap(source, width, height, true)
+                              val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                              for (y in 0 until height) {
+                                  for (x in 0 until width) {
+                                      val confidence = buffer.float
+                                      val pixel = scaled.getPixel(x, y)
+                                      val alpha = if (confidence > 0.55f) (confidence.coerceIn(0f, 1f) * 255).toInt() else 0
+                                      output.setPixel(
+                                          x, y,
+                                          Color.argb(alpha, Color.red(pixel), Color.green(pixel), Color.blue(pixel))
+                                      )
+                                  }
+                              }
+                              onSuccess(output)
+                          }
+                          .addOnFailureListener { e ->
+                              onError(e.message ?: "Gagal memproses Auto Cutout")
+                          }
+                  } catch (e: Exception) {
+                      onError(e.message ?: "Error Auto Cutout")
+                  }
+              }
+
+              fun synthesizeOfflineTts(
+                  context: Context,
+                  text: String,
+                  onSuccess: (Uri) -> Unit,
+                  onError: (String) -> Unit
+              ) {
+                  if (text.isBlank()) {
+                      onError("Teks TTS masih kosong")
+                      return
+                  }
+                  var tts: TextToSpeech? = null
+                  tts = TextToSpeech(context) { status ->
+                      if (status == TextToSpeech.SUCCESS) {
+                          val langRes = tts?.setLanguage(Locale("id", "ID"))
+                          if (langRes == TextToSpeech.LANG_MISSING_DATA || langRes == TextToSpeech.LANG_NOT_SUPPORTED) {
+                              tts?.setLanguage(Locale.US)
+                          }
+                          val outFile = File(context.cacheDir, "tts_${System.currentTimeMillis()}.wav")
+                          val utteranceId = UUID.randomUUID().toString()
+                          tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                              override fun onStart(id: String?) {}
+                              override fun onDone(id: String?) {
+                                  onSuccess(Uri.fromFile(outFile))
+                                  tts?.shutdown()
+                              }
+                              @Deprecated("Deprecated in Java")
+                              override fun onError(id: String?) {
+                                  onError("Gagal membuat suara TTS")
+                                  tts?.shutdown()
+                              }
+                          })
+                          tts?.synthesizeToFile(text, null, outFile, utteranceId)
+                      } else {
+                          onError("Engine TTS perangkat tidak tersedia")
+                      }
+                  }
+              }
+
+              fun createScriptBackground(context: Context): Uri {
+                  val w = 1080
+                  val h = 1920
+                  val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                  val canvas = Canvas(bmp)
+                  val paint = Paint()
+                  paint.shader = LinearGradient(
+                      0f, 0f, 0f, h.toFloat(),
+                      intArrayOf(Color.parseColor("#0F172A"), Color.parseColor("#1E1B4B"), Color.parseColor("#09090B")),
+                      null, Shader.TileMode.CLAMP
+                  )
+                  canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
+                  val file = File(context.cacheDir, "script_bg_${System.currentTimeMillis()}.png")
+                  FileOutputStream(file).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                  return Uri.fromFile(file)
+              }
+          }
+
+          class VoiceoverRecorder(private val context: Context) {
+              private var recorder: MediaRecorder? = null
+              private var currentFile: File? = null
+
+              fun start(): Boolean {
+                  return try {
+                      val file = File(context.cacheDir, "voiceover_${System.currentTimeMillis()}.m4a")
+                      currentFile = file
+                      val mr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                          MediaRecorder(context)
+                      } else {
+                          @Suppress("DEPRECATION")
+                          MediaRecorder()
+                      }
+                      mr.setAudioSource(MediaRecorder.AudioSource.MIC)
+                      mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                      mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                      mr.setAudioEncodingBitRate(128000)
+                      mr.setAudioSamplingRate(44100)
+                      mr.setOutputFile(file.absolutePath)
+                      mr.prepare()
+                      mr.start()
+                      recorder = mr
+                      true
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
+
+              fun stop(): Uri? {
+                  return try {
+                      recorder?.stop()
+                      recorder?.release()
+                      recorder = null
+                      currentFile?.let { Uri.fromFile(it) }
+                  } catch (_: Exception) {
+                      recorder = null
+                      null
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/procut/studio/ProEffectsEngine.kt
+          package com.procut.studio
+
+          import android.content.ContentValues
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Matrix
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.RectF
+          import android.graphics.Typeface
+          import android.os.Build
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.MediaStore
+          import androidx.media3.common.C
+          import androidx.media3.common.Effect
+          import androidx.media3.common.MediaItem
+          import androidx.media3.common.audio.AudioProcessor
+          import androidx.media3.common.audio.BaseAudioProcessor
+          import androidx.media3.common.audio.SonicAudioProcessor
+          import androidx.media3.effect.BitmapOverlay
+          import androidx.media3.effect.Contrast
+          import androidx.media3.effect.FrameDropEffect
+          import androidx.media3.effect.HslAdjustment
+          import androidx.media3.effect.MatrixTransformation
+          import androidx.media3.effect.OverlayEffect
+          import androidx.media3.effect.Presentation
+          import androidx.media3.effect.RgbFilter
+          import androidx.media3.effect.ScaleAndRotateTransformation
+          import androidx.media3.effect.SpeedChangeEffect
+          import androidx.media3.effect.StaticOverlaySettings
+          import androidx.media3.effect.TextureOverlay
+          import androidx.media3.transformer.Composition
+          import androidx.media3.transformer.EditedMediaItem
+          import androidx.media3.transformer.EditedMediaItemSequence
+          import androidx.media3.transformer.Effects
+          import androidx.media3.transformer.ExportException
+          import androidx.media3.transformer.ExportResult
+          import androidx.media3.transformer.ProgressHolder
+          import androidx.media3.transformer.Transformer
+          import com.google.common.collect.ImmutableList
+          import java.io.File
+          import java.io.FileInputStream
+          import java.nio.ByteBuffer
+          import kotlin.math.abs
+
+          class ProAudioProcessor(
+              private val volume: Float,
+              private val noiseGateThreshold: Float
+          ) : BaseAudioProcessor() {
+
+              override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+                  if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT) {
+                      return AudioProcessor.AudioFormat.NOT_SET
+                  }
+                  return inputAudioFormat
+              }
+
+              override fun queueInput(inputBuffer: ByteBuffer) {
+                  val remaining = inputBuffer.remaining()
+                  if (remaining == 0) return
+                  val out = replaceOutputBuffer(remaining)
+                  while (inputBuffer.remaining() >= 2) {
+                      val sample = inputBuffer.short.toInt()
+                      val norm = abs(sample) / 32768f
+                      val gated = if (noiseGateThreshold > 0.01f && norm < noiseGateThreshold) 0f else sample.toFloat()
+                      val scaled = (gated * volume).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                      out.putShort(scaled.toShort())
+                  }
+                  out.flip()
+              }
+          }
+
+          object ProEffectsEngine {
+
+              private fun renderTextBitmap(config: TextOverlayConfig): Bitmap {
+                  val w = 960
+                  val h = 240
+                  val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                  val canvas = Canvas(bmp)
+
+                  val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                      color = config.colorHex
+                      textSize = 62f
+                      typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                      textAlign = Paint.Align.CENTER
+                      setShadowLayer(8f, 0f, 4f, Color.BLACK)
+                  }
+
+                  val strokePaint = Paint(textPaint).apply {
+                      style = Paint.Style.STROKE
+                      strokeWidth = 10f
+                      color = Color.BLACK
+                  }
+
+                  val lines = config.text.trim().chunked(26).take(3)
+                  val lineHeight = 76f
+                  val totalH = lines.size * lineHeight
+                  val startY = (h - totalH) / 2f + 54f
+
+                  if (config.hasBox && lines.isNotEmpty()) {
+                      val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                          color = Color.argb(175, 10, 10, 14)
+                      }
+                      canvas.drawRoundRect(RectF(40f, 20f, w - 40f, h - 20f), 28f, 28f, boxPaint)
+                  }
+
+                  lines.forEachIndexed { idx, line ->
+                      val y = startY + idx * lineHeight
+                      canvas.drawText(line, w / 2f, y, strokePaint)
+                      canvas.drawText(line, w / 2f, y, textPaint)
+                  }
+                  return bmp
+              }
+
+              private fun renderMaskBitmap(mask: MaskPreset): Bitmap {
+                  val w = 720
+                  val h = 720
+                  val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                  val canvas = Canvas(bmp)
+                  val blackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
+
+                  when (mask) {
+                      MaskPreset.CIRCLE -> {
+                          val path = Path().apply {
+                              addRect(0f, 0f, w.toFloat(), h.toFloat(), Path.Direction.CW)
+                              addCircle(w / 2f, h / 2f, w * 0.42f, Path.Direction.CCW)
+                          }
+                          canvas.drawPath(path, blackPaint)
+                      }
+                      MaskPreset.CINEMATIC -> {
+                          val barH = h * 0.14f
+                          canvas.drawRect(0f, 0f, w.toFloat(), barH, blackPaint)
+                          canvas.drawRect(0f, h - barH, w.toFloat(), h.toFloat(), blackPaint)
+                      }
+                      MaskPreset.NONE -> {}
+                  }
+                  return bmp
+              }
+
+              fun buildVideoEffects(clip: VideoClip, state: EditorState, forExport: Boolean): List<Effect> {
+                  val effects = mutableListOf<Effect>()
+
+                  val sx = if (clip.flipH) -1f else 1f
+                  val sy = if (clip.flipV) -1f else 1f
+                  if (clip.rotation != 0f || clip.flipH || clip.flipV) {
+                      effects.add(
+                          ScaleAndRotateTransformation.Builder()
+                              .setScale(sx, sy)
+                              .setRotationDegrees(clip.rotation)
+                              .build()
+                      )
+                  }
+
+                  if (state.color.contrast != 0f) {
+                      effects.add(Contrast(state.color.contrast.coerceIn(-0.9f, 0.9f)))
+                  }
+
+                  if (state.color.saturation != 0f || state.color.brightness != 0f) {
+                      effects.add(
+                          HslAdjustment.Builder()
+                              .adjustSaturation(state.color.saturation * 100f)
+                              .adjustLightness(state.color.brightness * 50f)
+                              .build()
+                      )
+                  }
+
+                  when (state.color.filter) {
+                      FilterPreset.GRAYSCALE -> effects.add(RgbFilter.createGrayscaleFilter())
+                      FilterPreset.INVERT -> effects.add(RgbFilter.createInvertedFilter())
+                      FilterPreset.NORMAL -> {}
+                  }
+
+                  if (state.keyframe != KeyframePreset.NONE || state.transition != TransitionPreset.NONE) {
+                      effects.add(MatrixTransformation { timeUs ->
+                          val sec = timeUs / 1_000_000f
+                          val m = Matrix()
+                          if (state.transition == TransitionPreset.ZOOM_POP && sec < 0.4f) {
+                              val s = 0.7f + (sec / 0.4f) * 0.3f
+                              m.postScale(s, s)
+                          }
+                          when (state.keyframe) {
+                              KeyframePreset.ZOOM_IN -> {
+                                  val s = (1f + sec * 0.08f).coerceAtMost(1.8f)
+                                  m.postScale(s, s)
+                              }
+                              KeyframePreset.ZOOM_OUT -> {
+                                  val s = (1.5f - sec * 0.08f).coerceAtLeast(1f)
+                                  m.postScale(s, s)
+                              }
+                              KeyframePreset.PAN_RIGHT -> {
+                                  m.postScale(1.25f, 1.25f)
+                                  m.postTranslate(((sec * 0.06f) % 0.25f) - 0.12f, 0f)
+                              }
+                              KeyframePreset.SPIN -> {
+                                  m.postRotate((sec * 18f) % 360f)
+                              }
+                              KeyframePreset.NONE -> {}
+                          }
+                          m
+                      })
+                  }
+
+                  if (forExport && !clip.isImage && clip.speed != 1f) {
+                      effects.add(SpeedChangeEffect(clip.speed.coerceIn(0.25f, 4f)))
+                  }
+
+                  val overlays = mutableListOf<TextureOverlay>()
+
+                  if (state.mask != MaskPreset.NONE) {
+                      overlays.add(BitmapOverlay.createStaticBitmapOverlay(renderMaskBitmap(state.mask)))
+                  }
+
+                  state.imageOverlay.bitmap?.let { imgBmp ->
+                      val settings = StaticOverlaySettings.Builder()
+                          .setBackgroundFrameAnchor(state.imageOverlay.posX, state.imageOverlay.posY)
+                          .setScale(state.imageOverlay.scale, state.imageOverlay.scale)
+                          .setAlphaScale(state.imageOverlay.alpha)
+                          .build()
+                      overlays.add(BitmapOverlay.createStaticBitmapOverlay(imgBmp, settings))
+                  }
+
+                  if (state.textOverlay.text.isNotBlank()) {
+                      val textBmp = renderTextBitmap(state.textOverlay)
+                      val settings = StaticOverlaySettings.Builder()
+                          .setBackgroundFrameAnchor(0f, state.textOverlay.posY)
+                          .setScale(state.textOverlay.scale, state.textOverlay.scale * 0.35f)
+                          .build()
+                      overlays.add(BitmapOverlay.createStaticBitmapOverlay(textBmp, settings))
+                  }
+
+                  if (overlays.isNotEmpty()) {
+                      effects.add(OverlayEffect(ImmutableList.copyOf(overlays)))
+                  }
+
+                  if (forExport) {
+                      effects.add(
+                          Presentation.createForAspectRatio(
+                              state.aspectRatio.ratio,
+                              Presentation.LAYOUT_SCALE_TO_FIT
+                          )
+                      )
+                      effects.add(Presentation.createForHeight(state.exportConfig.height))
+                      effects.add(FrameDropEffect.createDefaultFrameDropEffect(state.exportConfig.fps.toFloat()))
+                  }
+
+                  return effects
+              }
+
+              private fun buildAudioProcessors(clip: VideoClip, state: EditorState): List<AudioProcessor> {
+                  val processors = mutableListOf<AudioProcessor>()
+                  if (clip.speed != 1f || state.audio.pitch != 1f) {
+                      val sonic = SonicAudioProcessor().apply {
+                          setSpeed(clip.speed.coerceIn(0.25f, 4f))
+                          setPitch(state.audio.pitch.coerceIn(0.5f, 2f))
+                      }
+                      processors.add(sonic)
+                  }
+                  if (state.audio.volume != 1f || state.audio.noiseReduction > 0.01f) {
+                      processors.add(ProAudioProcessor(state.audio.volume, state.audio.noiseReduction))
+                  }
+                  return processors
+              }
+
+              fun exportVideo(
+                  context: Context,
+                  state: EditorState,
+                  onProgress: (Int) -> Unit,
+                  onSuccess: (String) -> Unit,
+                  onError: (String) -> Unit
+              ) {
+                  if (state.clips.isEmpty()) {
+                      onError("Tambahkan minimal 1 video atau gambar terlebih dahulu.")
+                      return
+                  }
+
+                  val tempOutput = File(context.cacheDir, "procut_export_${System.currentTimeMillis()}.mp4")
+                  val editedVideoItems = state.clips.map { clip ->
+                      val mediaItemBuilder = MediaItem.Builder().setUri(clip.uri)
+                      if (clip.isImage) {
+                          mediaItemBuilder.setImageDurationMs((clip.trimEndMs - clip.trimStartMs).coerceAtLeast(1000L))
+                      } else {
+                          mediaItemBuilder.setClippingConfiguration(
+                              MediaItem.ClippingConfiguration.Builder()
+                                  .setStartPositionMs(clip.trimStartMs.coerceAtLeast(0L))
+                                  .setEndPositionMs(clip.trimEndMs.coerceAtLeast(clip.trimStartMs + 500L))
+                                  .build()
+                          )
+                      }
+                      val videoEffects = buildVideoEffects(clip, state, forExport = true)
+                      val audioProcessors = buildAudioProcessors(clip, state)
+
+                      val itemBuilder = EditedMediaItem.Builder(mediaItemBuilder.build())
+                          .setEffects(Effects(audioProcessors, videoEffects))
+                          .setRemoveAudio(state.audio.muteOriginal || clip.isImage)
+
+                      if (clip.isImage) {
+                          itemBuilder.setFrameRate(state.exportConfig.fps)
+                      }
+                      itemBuilder.build()
+                  }
+
+                  val sequences = mutableListOf<EditedMediaItemSequence>()
+                  sequences.add(EditedMediaItemSequence.Builder(editedVideoItems).build())
+
+                  listOfNotNull(state.audio.bgmUri, state.audio.voiceoverUri, state.audio.ttsUri).forEach { audioUri ->
+                      val audioItem = EditedMediaItem.Builder(MediaItem.fromUri(audioUri))
+                          .setRemoveVideo(true)
+                          .build()
+                      sequences.add(EditedMediaItemSequence.Builder(listOf(audioItem)).build())
+                  }
+
+                  val composition = Composition.Builder(sequences).build()
+                  val handler = Handler(Looper.getMainLooper())
+                  val progressHolder = ProgressHolder()
+                  var isFinished = false
+
+                  val transformer = Transformer.Builder(context)
+                      .addListener(object : Transformer.Listener {
+                          override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                              isFinished = true
+                              val savedPath = saveToGallery(context, tempOutput)
+                              onProgress(100)
+                              onSuccess(savedPath)
+                          }
+
+                          override fun onError(
+                              composition: Composition,
+                              exportResult: ExportResult,
+                              exportException: ExportException
+                          ) {
+                              isFinished = true
+                              onError(exportException.message ?: "Export gagal")
+                          }
+                      })
+                      .build()
+
+                  transformer.start(composition, tempOutput.absolutePath)
+
+                  val pollTask = object : Runnable {
+                      override fun run() {
+                          if (!isFinished) {
+                              val stateCode = transformer.getProgress(progressHolder)
+                              if (stateCode == Transformer.PROGRESS_STATE_AVAILABLE) {
+                                  onProgress(progressHolder.progress)
+                              }
+                              handler.postDelayed(this, 250L)
+                          }
+                      }
+                  }
+                  handler.post(pollTask)
+              }
+
+              private fun saveToGallery(context: Context, sourceFile: File): String {
+                  val fileName = "ProCut_${System.currentTimeMillis()}.mp4"
+                  return try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          val values = ContentValues().apply {
+                              put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                              put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                              put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/ProCutStudio")
+                          }
+                          val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                          if (uri != null) {
+                              context.contentResolver.openOutputStream(uri)?.use { out ->
+                                  FileInputStream(sourceFile).use { input -> input.copyTo(out) }
+                              }
+                              "Movies/ProCutStudio/$fileName"
+                          } else {
+                              sourceFile.absolutePath
+                          }
+                      } else {
+                          val dir = File(
+                              Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                              "ProCutStudio"
+                          )
+                          if (!dir.exists()) dir.mkdirs()
+                          val dest = File(dir, fileName)
+                          sourceFile.copyTo(dest, overwrite = true)
+                          dest.absolutePath
+                      }
+                  } catch (_: Exception) {
+                      sourceFile.absolutePath
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/procut/studio/MainActivity.kt
+          package com.procut.studio
+
+          import android.Manifest
+          import android.content.Intent
+          import android.graphics.BitmapFactory
+          import android.graphics.Color as AndroidColor
+          import android.os.Bundle
+          import android.speech.RecognizerIntent
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.horizontalScroll
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.*
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.vector.ImageVector
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.compose.ui.viewinterop.AndroidView
+          import androidx.media3.common.MediaItem
+          import androidx.media3.exoplayer.ExoPlayer
+          import androidx.media3.ui.PlayerView
+
+          enum class EditorTab(val title: String, val icon: ImageVector) {
+              EDIT("Edit", Icons.Default.ContentCut),
+              COLOR("Warna/Efek", Icons.Default.ColorLens),
+              OVERLAY("Overlay/AI", Icons.Default.Layers),
+              TEXT("Teks", Icons.Default.TextFields),
+              AUDIO("Audio", Icons.Default.MusicNote),
+              SCRIPT("Script AI", Icons.Default.AutoAwesome)
+          }
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      MaterialTheme(colorScheme = darkColorScheme(
+                          primary = Color(0xFF00E5FF),
+                          secondary = Color(0xFF7C4DFF),
+                          background = Color(0xFF0B0E14),
+                          surface = Color(0xFF151923)
+                      )) {
+                          ProCutStudioScreen()
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun ProCutStudioScreen() {
+              val context = LocalContext.current
+              var state by remember { mutableStateOf(EditorState()) }
+              var activeTab by remember { mutableStateOf(EditorTab.EDIT) }
+              var isPlaying by remember { mutableStateOf(false) }
+              var isRecording by remember { mutableStateOf(false) }
+              var showExportDialog by remember { mutableStateOf(false) }
+              var exportProgress by remember { mutableStateOf<Int?>(null) }
+              var statusMsg by remember { mutableStateOf("Siap mengedit video offline") }
+              var ttsInput by remember { mutableStateOf("") }
+              var scriptInput by remember { mutableStateOf("") }
+
+              val recorder = remember { VoiceoverRecorder(context) }
+
+              val exoPlayer = remember {
+                  ExoPlayer.Builder(context).build().apply {
+                      repeatMode = ExoPlayer.REPEAT_MODE_ALL
+                  }
+              }
+
+              DisposableEffect(Unit) {
+                  onDispose { exoPlayer.release() }
+              }
+
+              val activeClip = state.clips.getOrNull(state.selectedClipIndex)
+
+              LaunchedEffect(activeClip?.id, activeClip?.uri, activeClip?.speed) {
+                  if (activeClip != null && !activeClip.isImage) {
+                      exoPlayer.setMediaItem(MediaItem.fromUri(activeClip.uri))
+                      exoPlayer.setPlaybackSpeed(activeClip.speed)
+                      exoPlayer.prepare()
+                      exoPlayer.playWhenReady = isPlaying
+                  } else {
+                      exoPlayer.stop()
+                  }
+              }
+
+              val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                  if (uri != null) {
+                      try {
+                          context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      } catch (_: Exception) {}
+                      val dur = SmartTools.getVideoDurationMs(context, uri)
+                      val clip = VideoClip(
+                          uri = uri,
+                          label = "Video ${state.clips.size + 1}",
+                          isImage = false,
+                          durationMs = dur,
+                          trimStartMs = 0L,
+                          trimEndMs = dur
+                      )
+                      state = state.copy(
+                          clips = state.clips + clip,
+                          selectedClipIndex = state.clips.size
+                      )
+                      statusMsg = "Video ditambahkan (${dur / 1000}d)"
+                  }
+              }
+
+              val imageOverlayPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                  if (uri != null) {
+                      context.contentResolver.openInputStream(uri)?.use { stream ->
+                          val bmp = BitmapFactory.decodeStream(stream)
+                          if (bmp != null) {
+                              state = state.copy(imageOverlay = state.imageOverlay.copy(bitmap = bmp))
+                              statusMsg = "Gambar overlay dimuat"
+                          }
+                      }
+                  }
+              }
+
+              val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                  if (uri != null) {
+                      state = state.copy(audio = state.audio.copy(bgmUri = uri, bgmName = "Musik BGM Aktif"))
+                      statusMsg = "Musik latar ditambahkan"
+                  }
+              }
+
+              val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                  if (granted) {
+                      if (recorder.start()) {
+                          isRecording = true
+                          statusMsg = "Merekam voiceover..."
+                      }
+                  } else {
+                      Toast.makeText(context, "Izin mikrofon diperlukan", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+                  val matches = res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                  val caption = matches?.firstOrNull()
+                  if (!caption.isNullOrBlank()) {
+                      state = state.copy(textOverlay = state.textOverlay.copy(text = caption))
+                      statusMsg = "Auto Captions diterapkan"
+                  }
+              }
+
+              Scaffold(
+                  topBar = {
+                      TopAppBar(
+                          title = {
+                              Column {
+                                  Text("ProCut Studio", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                                  Text(statusMsg, fontSize = 11.sp, color = Color(0xFF94A3B8), maxLines = 1)
+                              }
+                          },
+                          actions = {
+                              TextButton(onClick = {
+                                  val nextIdx = (state.aspectRatio.ordinal + 1) % AspectRatioOption.entries.size
+                                  state = state.copy(aspectRatio = AspectRatioOption.entries[nextIdx])
+                              }) {
+                                  Text(state.aspectRatio.label, color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold)
+                              }
+                              Button(
+                                  onClick = { showExportDialog = true },
+                                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                  colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF), contentColor = Color.Black)
+                              ) {
+                                  Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                  Spacer(Modifier.width(4.dp))
+                                  Text("Ekspor", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                              }
+                              Spacer(Modifier.width(6.dp))
+                          },
+                          colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF111520))
+                      )
+                  },
+                  bottomBar = {
+                      NavigationBar(containerColor = Color(0xFF111520)) {
+                          EditorTab.entries.forEach { tab ->
+                              NavigationBarItem(
+                                  selected = activeTab == tab,
+                                  onClick = { activeTab = tab },
+                                  icon = { Icon(tab.icon, contentDescription = tab.title, modifier = Modifier.size(20.dp)) },
+                                  label = { Text(tab.title, fontSize = 9.sp, maxLines = 1) }
+                              )
+                          }
+                      }
+                  }
+              ) { padding ->
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(padding)
+                          .background(Color(0xFF0B0E14))
+                  ) {
+                      // 1. Video Preview Area
+                      Box(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .height(210.dp)
+                              .background(Color.Black),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          if (activeClip != null && !activeClip.isImage) {
+                              AndroidView(
+                                  factory = { ctx ->
+                                      PlayerView(ctx).apply {
+                                          player = exoPlayer
+                                          useController = false
+                                      }
+                                  },
+                                  modifier = Modifier.fillMaxSize()
+                              )
+                          } else if (activeClip != null && activeClip.isImage) {
+                              Text("Pratinjau Klip Gambar / Script (${activeClip.durationMs / 1000}d)", color = Color.LightGray)
+                          } else {
+                              Button(onClick = { videoPicker.launch(arrayOf("video/*")) }) {
+                                  Icon(Icons.Default.Add, contentDescription = null)
+                                  Spacer(Modifier.width(6.dp))
+                                  Text("Import Video")
+                              }
+                          }
+
+                          if (state.textOverlay.text.isNotBlank()) {
+                              Box(
+                                  modifier = Modifier
+                                      .align(Alignment.BottomCenter)
+                                      .padding(bottom = 14.dp)
+                                      .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                                      .padding(horizontal = 10.dp, vertical = 4.dp)
+                              ) {
+                                  Text(state.textOverlay.text, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                              }
+                          }
+                      }
+
+                      // 2. Playback & Quick Actions Bar
+                      Row(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .background(Color(0xFF151923))
+                              .padding(horizontal = 10.dp, vertical = 4.dp),
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.SpaceBetween
+                      ) {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                              IconButton(onClick = {
+                                  isPlaying = !isPlaying
+                                  exoPlayer.playWhenReady = isPlaying
+                              }) {
+                                  Icon(
+                                      if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                      contentDescription = "Play/Pause",
+                                      tint = Color(0xFF00E5FF)
+                                  )
+                              }
+                              IconButton(onClick = { videoPicker.launch(arrayOf("video/*")) }) {
+                                  Icon(Icons.Default.Add, contentDescription = "Tambah Video", tint = Color.White)
+                              }
+                          }
+                          Text(
+                              "Klip: ${state.clips.size} | Beat: ${state.beatMarkersMs.size}",
+                              fontSize = 11.sp,
+                              color = Color(0xFF94A3B8)
+                          )
+                          Row {
+                              IconButton(onClick = {
+                                  val pos = exoPlayer.currentPosition
+                                  state = state.copy(beatMarkersMs = state.beatMarkersMs + pos)
+                                  statusMsg = "Beat ditandai di ${pos / 1000f}d"
+                              }) {
+                                  Icon(Icons.Default.GraphicEq, contentDescription = "Tandai Beat", tint = Color(0xFFFFB74D))
+                              }
+                              IconButton(onClick = {
+                                  if (activeClip != null && !activeClip.isImage) {
+                                      val frameUri = SmartTools.captureFreezeFrame(context, activeClip.uri, exoPlayer.currentPosition)
+                                      if (frameUri != null) {
+                                          val freezeClip = VideoClip(
+                                              uri = frameUri,
+                                              label = "Freeze",
+                                              isImage = true,
+                                              durationMs = 3000L,
+                                              trimEndMs = 3000L
+                                          )
+                                          state = state.copy(clips = state.clips + freezeClip)
+                                          statusMsg = "Freeze Frame ditambahkan (3d)"
+                                      }
+                                  }
+                              }) {
+                                  Icon(Icons.Default.CameraAlt, contentDescription = "Freeze Frame", tint = Color.White)
+                              }
+                          }
+                      }
+
+                      // 3. Multi-Clip Timeline
+                      Row(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .horizontalScroll(rememberScrollState())
+                              .padding(8.dp),
+                          horizontalArrangement = Arrangement.spacedBy(6.dp)
+                      ) {
+                          state.clips.forEachIndexed { idx, clip ->
+                              val selected = idx == state.selectedClipIndex
+                              Column(
+                                  modifier = Modifier
+                                      .width(96.dp)
+                                      .clip(RoundedCornerShape(8.dp))
+                                      .background(if (selected) Color(0xFF1E3A5F) else Color(0xFF1E2433))
+                                      .border(1.5.dp, if (selected) Color(0xFF00E5FF) else Color.Transparent, RoundedCornerShape(8.dp))
+                                      .clickable { state = state.copy(selectedClipIndex = idx) }
+                                      .padding(8.dp)
+                              ) {
+                                  Text(clip.label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                                  Text("${(clip.trimEndMs - clip.trimStartMs) / 1000}d • ${clip.speed}x", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                              }
+                          }
+                      }
+
+                      // Export Progress Bar
+                      exportProgress?.let { prog ->
+                          LinearProgressIndicator(
+                              progress = { prog / 100f },
+                              modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)
+                          )
+                          Text("Merender video: $prog%", fontSize = 11.sp, color = Color(0xFF00E5FF), modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp))
+                      }
+
+                      // 4. Tool Control Panel
+                      Column(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .weight(1f)
+                              .verticalScroll(rememberScrollState())
+                              .padding(12.dp),
+                          verticalArrangement = Arrangement.spacedBy(10.dp)
+                      ) {
+                          when (activeTab) {
+                              EditorTab.EDIT -> {
+                                  if (activeClip == null) {
+                                      Text("Belum ada klip. Tekan tombol + untuk menambah video.", color = Color.Gray, fontSize = 13.sp)
+                                  } else {
+                                      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                          OutlinedButton(onClick = {
+                                              val mid = (activeClip.trimStartMs + activeClip.trimEndMs) / 2
+                                              if (mid - activeClip.trimStartMs > 500L) {
+                                                  val part1 = activeClip.copy(trimEndMs = mid, label = "${activeClip.label} A")
+                                                  val part2 = activeClip.copy(id = java.util.UUID.randomUUID().toString(), trimStartMs = mid, label = "${activeClip.label} B")
+                                                  val updated = state.clips.toMutableList()
+                                                  updated[state.selectedClipIndex] = part1
+                                                  updated.add(state.selectedClipIndex + 1, part2)
+                                                  state = state.copy(clips = updated)
+                                                  statusMsg = "Klip berhasil dibelah (Split)"
+                                              }
+                                          }) {
+                                              Icon(Icons.Default.ContentCut, null, modifier = Modifier.size(16.dp))
+                                              Spacer(Modifier.width(4.dp))
+                                              Text("Split")
+                                          }
+                                          OutlinedButton(onClick = {
+                                              val updated = state.clips.toMutableList()
+                                              updated[state.selectedClipIndex] = activeClip.copy(rotation = (activeClip.rotation + 90f) % 360f)
+                                              state = state.copy(clips = updated)
+                                          }) {
+                                              Icon(Icons.Default.RotateRight, null, modifier = Modifier.size(16.dp))
+                                              Spacer(Modifier.width(4.dp))
+                                              Text("${activeClip.rotation.toInt()}°")
+                                          }
+                                          OutlinedButton(onClick = {
+                                              val updated = state.clips.toMutableList()
+                                              updated[state.selectedClipIndex] = activeClip.copy(flipH = !activeClip.flipH)
+                                              state = state.copy(clips = updated)
+                                          }) {
+                                              Icon(Icons.Default.Flip, null, modifier = Modifier.size(16.dp))
+                                              Spacer(Modifier.width(4.dp))
+                                              Text("Flip")
+                                          }
+                                          IconButton(onClick = {
+                                              val updated = state.clips.toMutableList().apply { removeAt(state.selectedClipIndex) }
+                                              state = state.copy(clips = updated, selectedClipIndex = 0)
+                                          }) {
+                                              Icon(Icons.Default.Delete, null, tint = Color(0xFFFF5252))
+                                          }
+                                      }
+
+                                      Text("Kecepatan (Speed): ${"%.2f".format(activeClip.speed)}x", fontSize = 12.sp)
+                                      Slider(
+                                          value = activeClip.speed,
+                                          onValueChange = { spd ->
+                                              val updated = state.clips.toMutableList()
+                                              updated[state.selectedClipIndex] = activeClip.copy(speed = spd)
+                                              state = state.copy(clips = updated)
+                                          },
+                                          valueRange = 0.25f..4f
+                                      )
+
+                                      Text("Potong Awal (Trim Start): ${activeClip.trimStartMs / 1000f}d", fontSize = 12.sp)
+                                      Slider(
+                                          value = activeClip.trimStartMs.toFloat(),
+                                          onValueChange = { v ->
+                                              val updated = state.clips.toMutableList()
+                                              updated[state.selectedClipIndex] = activeClip.copy(
+                                                  trimStartMs = v.toLong().coerceAtMost((activeClip.trimEndMs - 500L).coerceAtLeast(0L))
+                                              )
+                                              state = state.copy(clips = updated)
+                                          },
+                                          valueRange = 0f..activeClip.durationMs.coerceAtLeast(1000L).toFloat()
+                                      )
+
+                                      Text("Potong Akhir (Trim End): ${activeClip.trimEndMs / 1000f}d", fontSize = 12.sp)
+                                      Slider(
+                                          value = activeClip.trimEndMs.toFloat(),
+                                          onValueChange = { v ->
+                                              val updated = state.clips.toMutableList()
+                                              updated[state.selectedClipIndex] = activeClip.copy(
+                                                  trimEndMs = v.toLong().coerceAtLeast(activeClip.trimStartMs + 500L)
+                                              )
+                                              state = state.copy(clips = updated)
+                                          },
+                                          valueRange = 0f..activeClip.durationMs.coerceAtLeast(1000L).toFloat()
+                                      )
+                                  }
+                              }
+
+                              EditorTab.COLOR -> {
+                                  Text("Filter Warna", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                      FilterPreset.entries.forEach { preset ->
+                                          FilterChip(
+                                              selected = state.color.filter == preset,
+                                              onClick = { state = state.copy(color = state.color.copy(filter = preset)) },
+                                              label = { Text(preset.label, fontSize = 11.sp) }
+                                          )
+                                      }
+                                  }
+                                  Text("Kecerahan (Brightness): ${"%.2f".format(state.color.brightness)}", fontSize = 12.sp)
+                                  Slider(value = state.color.brightness, onValueChange = { state = state.copy(color = state.color.copy(brightness = it)) }, valueRange = -1f..1f)
+
+                                  Text("Kontras (Contrast): ${"%.2f".format(state.color.contrast)}", fontSize = 12.sp)
+                                  Slider(value = state.color.contrast, onValueChange = { state = state.copy(color = state.color.copy(contrast = it)) }, valueRange = -0.8f..0.8f)
+
+                                  Text("Saturasi (Saturation): ${"%.2f".format(state.color.saturation)}", fontSize = 12.sp)
+                                  Slider(value = state.color.saturation, onValueChange = { state = state.copy(color = state.color.copy(saturation = it)) }, valueRange = -1f..1f)
+
+                                  Text("Keyframe Animation", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                  Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                      KeyframePreset.entries.forEach { kf ->
+                                          FilterChip(
+                                              selected = state.keyframe == kf,
+                                              onClick = { state = state.copy(keyframe = kf) },
+                                              label = { Text(kf.label, fontSize = 11.sp) }
+                                          )
+                                      }
+                                  }
+
+                                  Text("Masking & Transisi", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                  Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                      MaskPreset.entries.forEach { m ->
+                                          FilterChip(
+                                              selected = state.mask == m,
+                                              onClick = { state = state.copy(mask = m) },
+                                              label = { Text(m.label, fontSize = 11.sp) }
+                                          )
+                                      }
+                                  }
+                                  Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                      TransitionPreset.entries.forEach { t ->
+                                          FilterChip(
+                                              selected = state.transition == t,
+                                              onClick = { state = state.copy(transition = t) },
+                                              label = { Text("Transisi: ${t.label}", fontSize = 11.sp) }
+                                          )
+                                      }
+                                  }
+                              }
+
+                              EditorTab.OVERLAY -> {
+                                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                      Button(onClick = { imageOverlayPicker.launch(arrayOf("image/*")) }) {
+                                          Text("Pilih Gambar PIP")
+                                      }
+                                      OutlinedButton(
+                                          enabled = state.imageOverlay.bitmap != null,
+                                          onClick = {
+                                              val bmp = state.imageOverlay.bitmap ?: return@OutlinedButton
+                                              statusMsg = "Memproses AI Auto Cutout..."
+                                              SmartTools.runAutoCutout(
+                                                  source = bmp,
+                                                  onSuccess = { cutout ->
+                                                      state = state.copy(imageOverlay = state.imageOverlay.copy(bitmap = cutout))
+                                                      statusMsg = "Background gambar berhasil dihapus!"
+                                                  },
+                                                  onError = { err -> statusMsg = err }
+                                              )
+                                          }
+                                      ) {
+                                          Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(16.dp))
+                                          Spacer(Modifier.width(4.dp))
+                                          Text("AI Auto Cutout")
+                                      }
+                                  }
+                                  Text("Ukuran Overlay: ${"%.2f".format(state.imageOverlay.scale)}", fontSize = 12.sp)
+                                  Slider(value = state.imageOverlay.scale, onValueChange = { state = state.copy(imageOverlay = state.imageOverlay.copy(scale = it)) }, valueRange = 0.1f..1f)
+
+                                  Text("Opasitas (Alpha): ${"%.2f".format(state.imageOverlay.alpha)}", fontSize = 12.sp)
+                                  Slider(value = state.imageOverlay.alpha, onValueChange = { state = state.copy(imageOverlay = state.imageOverlay.copy(alpha = it)) }, valueRange = 0.1f..1f)
+
+                                  Text("Posisi X: ${"%.2f".format(state.imageOverlay.posX)}", fontSize = 12.sp)
+                                  Slider(value = state.imageOverlay.posX, onValueChange = { state = state.copy(imageOverlay = state.imageOverlay.copy(posX = it)) }, valueRange = -0.8f..0.8f)
+
+                                  Text("Posisi Y: ${"%.2f".format(state.imageOverlay.posY)}", fontSize = 12.sp)
+                                  Slider(value = state.imageOverlay.posY, onValueChange = { state = state.copy(imageOverlay = state.imageOverlay.copy(posY = it)) }, valueRange = -0.8f..0.8f)
+                              }
+
+                              EditorTab.TEXT -> {
+                                  OutlinedTextField(
+                                      value = state.textOverlay.text,
+                                      onValueChange = { state = state.copy(textOverlay = state.textOverlay.copy(text = it)) },
+                                      label = { Text("Teks / Subtitle Layar") },
+                                      modifier = Modifier.fillMaxWidth()
+                                  )
+                                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                      Button(onClick = {
+                                          val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                              putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                              putExtra(RecognizerIntent.EXTRA_LANGUAGE, "id-ID")
+                                              putExtra(RecognizerIntent.EXTRA_PROMPT, "Ucapkan teks subtitle...")
+                                          }
+                                          try {
+                                              speechLauncher.launch(intent)
+                                          } catch (_: Exception) {
+                                              statusMsg = "Layanan Speech-to-Text tidak tersedia"
+                                          }
+                                      }) {
+                                          Icon(Icons.Default.Mic, null, modifier = Modifier.size(16.dp))
+                                          Spacer(Modifier.width(4.dp))
+                                          Text("Auto Captions")
+                                      }
+                                      FilterChip(
+                                          selected = state.textOverlay.hasBox,
+                                          onClick = { state = state.copy(textOverlay = state.textOverlay.copy(hasBox = !state.textOverlay.hasBox)) },
+                                          label = { Text("Kotak Latar") }
+                                      )
+                                  }
+                                  Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                      listOf(AndroidColor.WHITE, AndroidColor.YELLOW, AndroidColor.CYAN, AndroidColor.GREEN).forEach { c ->
+                                          Box(
+                                              modifier = Modifier
+                                                  .size(28.dp)
+                                                  .clip(CircleShape)
+                                                  .background(Color(c))
+                                                  .border(2.dp, if (state.textOverlay.colorHex == c) Color.Magenta else Color.Gray, CircleShape)
+                                                  .clickable { state = state.copy(textOverlay = state.textOverlay.copy(colorHex = c)) }
+                                          )
+                                      }
+                                  }
+                                  Text("Posisi Vertikal Teks", fontSize = 12.sp)
+                                  Slider(value = state.textOverlay.posY, onValueChange = { state = state.copy(textOverlay = state.textOverlay.copy(posY = it)) }, valueRange = -0.85f..0.85f)
+                              }
+
+                              EditorTab.AUDIO -> {
+                                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                      Button(onClick = { audioPicker.launch(arrayOf("audio/*")) }) {
+                                          Text(if (state.audio.bgmUri == null) "Tambah Musik BGM" else "Ganti BGM")
+                                      }
+                                      Button(
+                                          colors = ButtonDefaults.buttonColors(
+                                              containerColor = if (isRecording) Color(0xFFFF5252) else MaterialTheme.colorScheme.secondary
+                                          ),
+                                          onClick = {
+                                              if (!isRecording) {
+                                                  micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                              } else {
+                                                  val voUri = recorder.stop()
+                                                  isRecording = false
+                                                  if (voUri != null) {
+                                                      state = state.copy(audio = state.audio.copy(voiceoverUri = voUri))
+                                                      statusMsg = "Voiceover tersimpan di jalur audio"
+                                                  }
+                                              }
+                                          }
+                                      ) {
+                                          Icon(if (isRecording) Icons.Default.Stop else Icons.Default.Mic, null, modifier = Modifier.size(16.dp))
+                                          Spacer(Modifier.width(4.dp))
+                                          Text(if (isRecording) "Stop Rekam" else "Voiceover")
+                                      }
+                                  }
+
+                                  Row(verticalAlignment = Alignment.CenterVertically) {
+                                      Checkbox(
+                                          checked = state.audio.muteOriginal,
+                                          onCheckedChange = { state = state.copy(audio = state.audio.copy(muteOriginal = it)) }
+                                      )
+                                      Text("Bisukan Suara Asli Video", fontSize = 12.sp)
+                                  }
+
+                                  Text("Volume: ${(state.audio.volume * 100).toInt()}%", fontSize = 12.sp)
+                                  Slider(value = state.audio.volume, onValueChange = { state = state.copy(audio = state.audio.copy(volume = it)) }, valueRange = 0f..2f)
+
+                                  Text("Pitch Suara: ${"%.2f".format(state.audio.pitch)}x", fontSize = 12.sp)
+                                  Slider(value = state.audio.pitch, onValueChange = { state = state.copy(audio = state.audio.copy(pitch = it)) }, valueRange = 0.5f..2f)
+
+                                  Text("Noise Reduction (Peredam Bising): ${(state.audio.noiseReduction * 100).toInt()}%", fontSize = 12.sp)
+                                  Slider(value = state.audio.noiseReduction, onValueChange = { state = state.copy(audio = state.audio.copy(noiseReduction = it)) }, valueRange = 0f..0.25f)
+
+                                  HorizontalDivider()
+                                  Text("Text-to-Speech (TTS Offline)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                  OutlinedTextField(
+                                      value = ttsInput,
+                                      onValueChange = { ttsInput = it },
+                                      label = { Text("Tulis teks untuk narator...") },
+                                      modifier = Modifier.fillMaxWidth()
+                                  )
+                                  Button(onClick = {
+                                      statusMsg = "Membuat audio TTS..."
+                                      SmartTools.synthesizeOfflineTts(
+                                          context = context,
+                                          text = ttsInput,
+                                          onSuccess = { uri ->
+                                              state = state.copy(audio = state.audio.copy(ttsUri = uri))
+                                              statusMsg = "Audio TTS berhasil ditambahkan!"
+                                          },
+                                          onError = { err -> statusMsg = err }
+                                      )
+                                  }) {
+                                      Icon(Icons.Default.RecordVoiceOver, null, modifier = Modifier.size(16.dp))
+                                      Spacer(Modifier.width(6.dp))
+                                      Text("Generate Suara TTS")
+                                  }
+                              }
+
+                              EditorTab.SCRIPT -> {
+                                  Text("Script-to-Video Otomatis (Offline)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                  Text(
+                                      "Ketik naskah singkat. Aplikasi akan otomatis membuat latar video 9:16, audio narator TTS, dan teks subtitle.",
+                                      fontSize = 12.sp,
+                                      color = Color(0xFF94A3B8)
+                                  )
+                                  OutlinedTextField(
+                                      value = scriptInput,
+                                      onValueChange = { scriptInput = it },
+                                      label = { Text("Masukkan naskah video di sini...") },
+                                      minLines = 3,
+                                      modifier = Modifier.fillMaxWidth()
+                                  )
+                                  Button(
+                                      modifier = Modifier.fillMaxWidth(),
+                                      onClick = {
+                                          if (scriptInput.isBlank()) {
+                                              statusMsg = "Tulis naskah terlebih dahulu"
+                                              return@Button
+                                          }
+                                          statusMsg = "Merakit video dari naskah..."
+                                          val bgUri = SmartTools.createScriptBackground(context)
+                                          val estDuration = (scriptInput.length * 90L).coerceIn(4000L, 20000L)
+                                          val scriptClip = VideoClip(
+                                              uri = bgUri,
+                                              label = "Script Scene",
+                                              isImage = true,
+                                              durationMs = estDuration,
+                                              trimEndMs = estDuration
+                                          )
+                                          SmartTools.synthesizeOfflineTts(
+                                              context = context,
+                                              text = scriptInput,
+                                              onSuccess = { ttsUri ->
+                                                  state = state.copy(
+                                                      clips = listOf(scriptClip),
+                                                      selectedClipIndex = 0,
+                                                      textOverlay = state.textOverlay.copy(text = scriptInput, posY = 0f),
+                                                      audio = state.audio.copy(ttsUri = ttsUri)
+                                                  )
+                                                  statusMsg = "Script-to-Video siap diekspor!"
+                                              },
+                                              onError = { err -> statusMsg = err }
+                                          )
+                                      }
+                                  ) {
+                                      Icon(Icons.Default.AutoAwesome, null)
+                                      Spacer(Modifier.width(6.dp))
+                                      Text("Buat Video dari Naskah")
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+
+              if (showExportDialog) {
+                  AlertDialog(
+                      onDismissRequest = { showExportDialog = false },
+                      title = { Text("Pengaturan Ekspor Video") },
+                      text = {
+                          Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                              Text("Resolusi:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                  listOf(720 to "720p", 1080 to "1080p", 2160 to "4K").forEach { (h, label) ->
+                                      FilterChip(
+                                          selected = state.exportConfig.height == h,
+                                          onClick = { state = state.copy(exportConfig = state.exportConfig.copy(height = h)) },
+                                          label = { Text(label) }
+                                      )
+                                  }
+                              }
+                              Text("Frame Rate (FPS):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                  listOf(24, 30, 60).forEach { fps ->
+                                      FilterChip(
+                                          selected = state.exportConfig.fps == fps,
+                                          onClick = { state = state.copy(exportConfig = state.exportConfig.copy(fps = fps)) },
+                                          label = { Text("$fps FPS") }
+                                      )
+                                  }
+                              }
+                          }
+                      },
+                      confirmButton = {
+                          Button(onClick = {
+                              showExportDialog = false
+                              exportProgress = 0
+                              statusMsg = "Memulai render video..."
+                              ProEffectsEngine.exportVideo(
+                                  context = context,
+                                  state = state,
+                                  onProgress = { p -> exportProgress = p },
+                                  onSuccess = { path ->
+                                      exportProgress = null
+                                      statusMsg = "Tersimpan: $path"
+                                      Toast.makeText(context, "Berhasil diekspor ke $path", Toast.LENGTH_LONG).show()
+                                  },
+                                  onError = { err ->
+                                      exportProgress = null
+                                      statusMsg = "Error: $err"
+                                      Toast.makeText(context, "Gagal: $err", Toast.LENGTH_LONG).show()
+                                  }
+                              )
+                          }) {
+                              Text("Mulai Ekspor")
+                          }
+                      },
+                      dismissButton = {
+                          TextButton(onClick = { showExportDialog = false }) { Text("Batal") }
+                      }
+                  )
+              }
+          }
+          EOF
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProCut-Studio-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
